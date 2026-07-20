@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 James Nguyen
 
 ;; Author: James Nguyen <james@jojojames.com>
-;; Version: 1.0
+;; Version: 1.0.1
 ;; Package-Requires: ((emacs "29.1") (fzf-native "2.2"))
 ;; Keywords: matching, completion, fzf, fuzzy, fussy
 ;; Homepage: https://github.com/jojojames/fzfa
