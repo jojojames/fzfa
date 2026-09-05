@@ -3,6 +3,7 @@
 
 [[https://github.com/jojojames/fzfa/actions/workflows/test.yaml][https://github.com/jojojames/fzfa/actions/workflows/test.yaml/badge.svg]]
 [[https://melpa.org/#/fzfa][file:https://melpa.org/packages/fzfa-badge.svg]]
+[[https://stable.melpa.org/#/fzfa][file:https://stable.melpa.org/packages/fzfa-badge.svg]]
 
 #+HTML: <img src="./screenshots/demo.webp" alt="fzfa demo" />
 
