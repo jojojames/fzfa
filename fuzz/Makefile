@@ -1,6 +1,6 @@
-.PHONY: compile selftest trace-selftest reduce-selftest replay replay-trace \
-	replay-trace-live reduce-trace reduce-trace-live state producer-selftest \
-	producer tools live clean
+.PHONY: compile selftest coverage-selftest coverage trace-selftest \
+	reduce-selftest replay replay-trace replay-trace-live reduce-trace \
+	reduce-trace-live state producer-selftest producer tools live clean
 
 EMACS ?= emacs
 FZF_NATIVE_DIR ?= ../../fzf-native
@@ -24,6 +24,15 @@ compile: clean
 
 selftest:
 	$(STATE_RUNNER) -f fzfa-fuzz-state-selftest-batch
+
+coverage-selftest:
+	$(STATE_RUNNER) -l fzfa-fuzz-coverage.el \
+	  -f fzfa-fuzz-coverage-selftest-batch
+
+coverage:
+	FZFA_FUZZ_CASES=$(CASES) FZFA_FUZZ_STEPS=$(STEPS) \
+	  $(STATE_RUNNER) -l fzfa-fuzz-coverage.el \
+	  -f fzfa-fuzz-coverage-batch
 
 trace-selftest:
 	$(NATIVE_RUNNER) -l fzfa-fuzz-replay.el \

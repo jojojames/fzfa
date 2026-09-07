@@ -19,6 +19,16 @@ The targets are:
 - `make selftest`: require generated producer traces to reach their intended
   race witnesses, then inject eight controlled defects and require the matching
   state oracle to reject each one.
+- `make coverage-selftest`: classify two fixed lifecycle traces and require
+  exact effective, guarded-stale, and observational-no-op counts. It also
+  removes a required result from the report and requires the coverage gate to
+  fail.
+- `make coverage`: report semantic lifecycle states, transitions,
+  state/action/outcome buckets, and adjacent transition pairs for the exact
+  producer traces used by the state campaign. It fails if required events or
+  state facets disappear, or if observational no-ops dominate the campaign.
+  The fixed classifier self-test covers `deliver/none`; the current generated
+  campaign does not claim that event as a reachability gate.
 - `make trace-selftest`: round-trip trace data and raw bytes, reject malformed
   files, prove replay does not call the generator, and reproduce one controlled
   failure by its stable signature.
@@ -73,6 +83,7 @@ From `fzf-async/fuzz`:
 
 ```sh
 make selftest replay state
+make coverage-selftest coverage
 make trace-selftest
 make reduce-selftest
 make producer-selftest
@@ -138,6 +149,30 @@ Useful controls are:
 - `STEPS`: operations in each producer-lifecycle state trace.
 - `LIVE_CASES`: number of real minibuffer sessions.
 - `FZFA_FUZZ_SEED`: first deterministic seed.
+
+The coverage report separates three outcomes:
+
+- `effective`: the action changes modeled lifecycle state or publishes current
+  work.
+- `guarded`: stale work is intentionally presented and rejected.
+- `no-op`: no callback or timer exists, or a fetch repeats the same query.
+
+Guarded work is counted separately because rejecting an old callback or timer
+is behavior the campaign is meant to test. The report's cross-product buckets
+combine the state before an action, the action kind, and its outcome. Adjacent
+pairs show which semantic results occurred back-to-back. Raw action count is
+reported, but required transitions and state facets are the CI gate.
+
+This analyzer describes what an explicit trace asks the driver to do. It is a
+reachability measure, not another correctness oracle. The state driver still
+compares fzfa's observed behavior with its independent model.
+
+The report also lists the first action kind in each trace. With the default
+root seed and 300 cases, all 300 current traces start with `fetch` after the
+completion-list generator advances the shared RNG. The fixed classifier test
+reaches `deliver/none`, but the generated campaign does not. This correlation
+is recorded here for the state-aware generation phase; it is not treated as a
+product failure.
 
 The state lane currently labels the process-buffer `fzfa--print` ownership
 case as `KNOWN` when it occurs. It does not require that gap to remain: once the
