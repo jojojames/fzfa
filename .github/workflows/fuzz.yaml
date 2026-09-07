@@ -1,0 +1,163 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  state:
+    name: State / Emacs ${{ matrix.emacs-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: [29.1, 30.1, snapshot]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fzf-async
+
+      - uses: actions/checkout@v4
+        with:
+          repository: dangduc/fzf-native
+          ref: "2.7"
+          path: fzf-native
+
+      - uses: jcs090218/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Replay fixed cases and fuzz state transitions
+        shell: bash
+        env:
+          FZFA_FUZZ_ARTIFACT_FILE: ${{ runner.temp }}/fzfa-state-${{ matrix.emacs-version }}.sexp
+        run: |
+          cases=300
+          steps=40
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            cases=5000
+            steps=100
+          fi
+          make -C fzf-async/fuzz compile selftest trace-selftest \
+            reduce-selftest replay state \
+            CASES="$cases" STEPS="$steps"
+
+      - name: Upload state failure trace
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fzfa-state-trace-${{ matrix.emacs-version }}
+          path: ${{ runner.temp }}/fzfa-state-${{ matrix.emacs-version }}.sexp
+          if-no-files-found: ignore
+
+  producer:
+    name: Native producer and tool boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fzf-async
+
+      - uses: actions/checkout@v4
+        with:
+          repository: dangduc/fzf-native
+          ref: "2.7"
+          path: fzf-native
+
+      - uses: jcs090218/setup-emacs@master
+        with:
+          version: 30.1
+
+      - name: Install ugrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ugrep
+
+      - name: Fuzz producer bytes and integration defaults
+        shell: bash
+        env:
+          FZFA_FUZZ_ARTIFACT_FILE: ${{ runner.temp }}/fzfa-producer.sexp
+        run: |
+          cases=100
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            cases=1000
+          fi
+          make -C fzf-async/fuzz producer-selftest producer CASES="$cases"
+          make -C fzf-async/fuzz tools
+
+      - name: Upload producer failure trace
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fzfa-producer-trace
+          path: ${{ runner.temp }}/fzfa-producer.sexp
+          if-no-files-found: ignore
+
+  live:
+    name: Live icomplete / Emacs ${{ matrix.emacs-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: [29.1, 30.1, snapshot]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fzf-async
+
+      - uses: actions/checkout@v4
+        with:
+          repository: dangduc/fzf-native
+          ref: "2.7"
+          path: fzf-native
+
+      - uses: jcs090218/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Exercise a real minibuffer
+        shell: bash
+        env:
+          TERM: xterm-256color
+          FZFA_FUZZ_RESULT_FILE: ${{ runner.temp }}/fzfa-live-${{ matrix.emacs-version }}.txt
+          FZFA_FUZZ_ARTIFACT_FILE: ${{ runner.temp }}/fzfa-live-${{ matrix.emacs-version }}.sexp
+        run: |
+          cases=8
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            cases=40
+          fi
+          set +e
+          script --quiet --return --command \
+            "make -C fzf-async/fuzz live LIVE_CASES=$cases LIVE_EMACS_FLAGS=-nw" \
+            /dev/null
+          status=$?
+          set -e
+          echo "----- live fuzz result -----"
+          if [[ -f "$FZFA_FUZZ_RESULT_FILE" ]]; then
+            cat "$FZFA_FUZZ_RESULT_FILE"
+          else
+            echo "No live fuzz result file was produced."
+          fi
+          exit "$status"
+
+      - name: Upload live failure trace
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fzfa-live-trace-${{ matrix.emacs-version }}
+          path: ${{ runner.temp }}/fzfa-live-${{ matrix.emacs-version }}.sexp
+          if-no-files-found: ignore
