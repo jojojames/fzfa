@@ -1,5 +1,6 @@
-.PHONY: compile selftest trace-selftest replay replay-trace \
-	replay-trace-live state producer-selftest producer tools live clean
+.PHONY: compile selftest trace-selftest reduce-selftest replay replay-trace \
+	replay-trace-live reduce-trace reduce-trace-live state producer-selftest \
+	producer tools live clean
 
 EMACS ?= emacs
 FZF_NATIVE_DIR ?= ../../fzf-native
@@ -28,6 +29,10 @@ trace-selftest:
 	$(NATIVE_RUNNER) -l fzfa-fuzz-replay.el \
 	  -f fzfa-fuzz-replay-selftest-batch
 
+reduce-selftest:
+	$(NATIVE_RUNNER) -l fzfa-fuzz-reduce.el \
+	  -f fzfa-fuzz-reduce-selftest-batch
+
 replay:
 	$(STATE_RUNNER) -f fzfa-fuzz-replay-batch
 
@@ -49,6 +54,27 @@ replay-trace-live:
 	  $(EMACS) -Q $(LIVE_EMACS_FLAGS) $(ELISP_LOAD_PATH) \
 	  -l fzf-native -f fzf-native-load-dyn \
 	  -l fzfa-fuzz-replay.el -f fzfa-fuzz-replay-trace-live
+
+reduce-trace:
+	@if [ -z "$(TRACE)" ]; then \
+	  echo "usage: make reduce-trace TRACE=/path/to/failure.sexp [OUTPUT=/path/to/min.sexp]"; \
+	  exit 2; \
+	fi
+	FZFA_FUZZ_TRACE_FILE="$(abspath $(TRACE))" \
+	FZFA_FUZZ_REDUCED_FILE="$(if $(OUTPUT),$(abspath $(OUTPUT)),)" \
+	  $(NATIVE_RUNNER) -l fzfa-fuzz-reduce.el \
+	  -f fzfa-fuzz-reduce-trace-batch
+
+reduce-trace-live:
+	@if [ -z "$(TRACE)" ]; then \
+	  echo "usage: make reduce-trace-live TRACE=/path/to/failure.sexp [OUTPUT=/path/to/min.sexp]"; \
+	  exit 2; \
+	fi
+	FZFA_FUZZ_TRACE_FILE="$(abspath $(TRACE))" \
+	FZFA_FUZZ_REDUCED_FILE="$(if $(OUTPUT),$(abspath $(OUTPUT)),)" \
+	  $(EMACS) -Q $(LIVE_EMACS_FLAGS) $(ELISP_LOAD_PATH) \
+	  -l fzf-native -f fzf-native-load-dyn \
+	  -l fzfa-fuzz-reduce.el -f fzfa-fuzz-reduce-trace-live
 
 state:
 	FZFA_FUZZ_CASES=$(CASES) FZFA_FUZZ_STEPS=$(STEPS) \

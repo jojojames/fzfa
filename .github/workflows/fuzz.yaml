@@ -50,7 +50,8 @@ jobs:
             cases=5000
             steps=100
           fi
-          make -C fzf-async/fuzz compile selftest trace-selftest replay state \
+          make -C fzf-async/fuzz compile selftest trace-selftest \
+            reduce-selftest replay state \
             CASES="$cases" STEPS="$steps"
 
       - name: Upload state failure trace

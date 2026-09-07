@@ -234,6 +234,30 @@ case now passes or a different oracle fails.
 reader, replay without random calls, structured expected/observed state, and
 same-signature reproduction.
 
+## Action reduction
+
+A failure artifact can be shortened without rerunning its random generator:
+
+```sh
+make -C fuzz reduce-trace TRACE=/path/to/failure.sexp
+make -C fuzz replay-trace TRACE=/path/to/failure.sexp.min.sexp
+```
+
+Use `reduce-trace-live` with `LIVE_EMACS_FLAGS=-nw` for a live icomplete
+artifact. Pass `OUTPUT=/path/to/name.sexp` to choose the output file. Reduction
+does not overwrite the input.
+
+The reducer removes contiguous groups of actions, then tries each remaining
+single action until another full pass removes nothing. It accepts a candidate
+only when exact replay reaches the artifact's recorded stable signature. A
+passing trace, malformed trace, or different oracle is rejected. The saved
+artifact contains the expected and observed values from the minimized replay.
+
+This produces a witness that is one-minimal for action deletion: no remaining
+single action can be removed while keeping that signature. It does not claim a
+globally smallest trace, and this phase does not simplify payloads or initial
+state.
+
 ## Compatibility rule
 
 Format 1 is immutable.  A change that gives an existing field a different
