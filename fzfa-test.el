@@ -1762,6 +1762,53 @@ that render from the snapshot callback into producer-failure reporting."
     (should (equal (plist-get result :key) '(7 t nil)))
     (should (= (plist-get result :snapshots) 2))))
 
+(ert-deftest fzfa-session-reentrant-equal-text-retains-new-properties ()
+  "Equal text and counts can carry a newer nested presentation."
+  (let* ((src (fzfa-make-source :command "unused"))
+         (fzfa-highlight t)
+         (fzf-native-highlight-fn
+          (lambda (candidate _positions)
+            (put-text-property 0 1 'fzfa-test-policy 'initial candidate)))
+         (status (fzfa-test--publication-snapshot 7 '("alpha")))
+         (snapshots 0) (submits 0) initial inner outer inner-hook)
+    (setf (fzfa-source-handle src) 'fake-handle)
+    (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+              ((symbol-function 'fzf-native-async-submit)
+               (lambda (&rest _) (cl-incf submits) 7))
+              ((symbol-function 'fzf-native-async-status)
+               (lambda (&rest _) status))
+              ((symbol-function 'fzf-native-async-snapshot)
+               (lambda (&rest _)
+                 (cl-incf snapshots)
+                 (let ((candidate (copy-sequence "alpha"))
+                       (hook fzf-native-highlight-fn))
+                   (funcall hook candidate '(0))
+                   (fzfa-test--publication-snapshot 7 (list candidate))))))
+      ;; Start with a nonempty cache.  Its text and counts match the nested
+      ;; output, but the hook gives each publication different properties.
+      (setq initial (fzfa--source-async-out src "a" 10)
+            inner-hook
+            (lambda (candidate _positions)
+              (put-text-property 0 1 'fzfa-test-policy 'inner candidate)))
+      (should (eq (get-text-property 0 'fzfa-test-policy (car (nth 1 initial)))
+                  'initial))
+      (setq fzf-native-highlight-fn
+            (lambda (candidate _positions)
+              (put-text-property 0 1 'fzfa-test-policy 'outer candidate)
+              (setq fzf-native-highlight-fn inner-hook
+                    inner (fzfa--source-async-out src "a" 10))))
+      (setq outer (fzfa--source-async-out src "a" 10))
+      (should (equal initial inner))
+      (should-not (eq initial inner))
+      (should (eq outer t))
+      (should (eq (fzfa-source-request-output src) inner))
+      (should (eq (get-text-property 0 'fzfa-test-policy (car (nth 1 inner)))
+                  'inner))
+      (dotimes (_ 20)
+        (should (eq (fzfa--source-async-out src "a" 10) inner)))
+      (should (= snapshots 3))
+      (should (= submits 1)))))
+
 (ert-deftest fzfa-session-reentrant-failure-survives-outer-snapshot ()
   "A nested terminal error cannot be replaced by an older successful snapshot."
   (let* ((result (fzfa-test--reentrant-session-output
@@ -1785,6 +1832,68 @@ that render from the snapshot callback into producer-failure reporting."
     (should (eq (plist-get result :cached) inner))
     (should (eq (plist-get result :redraw) inner))
     (should (= (plist-get result :snapshots) 2))))
+
+(defun fzfa-test--snapshot-policy-change (change-hook)
+  "Check a highlight callback changing policy without a nested render.
+When CHANGE-HOOK is non-nil, clear the hook; otherwise disable highlighting."
+  (let* ((src (fzfa-make-source :command "unused"))
+         (fzfa-highlight t)
+         (fzf-native-highlight-fn nil)
+         (submits 0) (snapshots 0) (hooks 0) first second)
+    (setf (fzfa-source-handle src) 'fake-handle)
+    (setq fzf-native-highlight-fn
+          (lambda (candidate _positions)
+            (cl-incf hooks)
+            (put-text-property 0 (length candidate)
+                               'fzfa-test-policy 'old candidate)
+            (if change-hook
+                (setq fzf-native-highlight-fn nil)
+              (setq fzfa-highlight nil))))
+    (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+              ((symbol-function 'fzf-native-async-submit)
+               (lambda (&rest _) (cl-incf submits) 7))
+              ((symbol-function 'fzf-native-async-status)
+               (lambda (&rest _)
+                 (fzfa-test--publication-snapshot 7 '("alpha" "alphabet"))))
+              ((symbol-function 'fzf-native-async-snapshot)
+               (lambda (&rest _)
+                 (cl-incf snapshots)
+                 ;; Native code captures the hook before applying it to the
+                 ;; snapshot's strings.  A callback can change the next read's
+                 ;; policy without changing this captured callback.
+                 (let ((hook (and fzf-native-async-highlight
+                                  fzf-native-highlight-fn))
+                       (candidates (mapcar #'copy-sequence
+                                           '("alpha" "alphabet"))))
+                   (when hook
+                     (dolist (candidate candidates)
+                       (funcall hook candidate '(0))))
+                   (fzfa-test--publication-snapshot 7 candidates)))))
+      (setq first (fzfa--source-async-out src "a" 10))
+      (should (equal (nth 1 first) '("alpha" "alphabet")))
+      (dolist (candidate (nth 1 first))
+        (should (eq (get-text-property 0 'fzfa-test-policy candidate) 'old)))
+      (should (= hooks 2))
+      (should (= snapshots 1))
+      ;; No nested render occurred.  The next read must correct the strings
+      ;; even though the native generation and matcher request are unchanged.
+      (setq second (fzfa--source-async-out src "a" 10))
+      (should (equal (nth 1 second) '("alpha" "alphabet")))
+      (dolist (candidate (nth 1 second))
+        (should-not (get-text-property 0 'fzfa-test-policy candidate)))
+      (dotimes (_ 20)
+        (should (eq second (fzfa--source-async-out src "a" 10))))
+      (should (= submits 1))
+      (should (= snapshots 2))
+      (should (= hooks 2)))))
+
+(ert-deftest fzfa-session-snapshot-hook-change-rematerializes ()
+  "A hook changed during snapshot construction takes effect on the next read."
+  (fzfa-test--snapshot-policy-change t))
+
+(ert-deftest fzfa-session-snapshot-highlight-disable-rematerializes ()
+  "Highlighting disabled during a snapshot takes effect on the next read."
+  (fzfa-test--snapshot-policy-change nil))
 
 (ert-deftest fzfa-session-presentation-change-rematerializes-without-rescore ()
   "Highlight policy and hook changes rebuild Lisp output, not native work."
