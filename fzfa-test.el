@@ -1763,7 +1763,7 @@ that render from the snapshot callback into producer-failure reporting."
     (should (= (plist-get result :snapshots) 2))))
 
 (ert-deftest fzfa-session-reentrant-equal-text-retains-new-properties ()
-  "Equal text and counts can carry a newer nested presentation."
+  "Equal text and properties do not identify a snapshot publication."
   (let* ((src (fzfa-make-source :command "unused"))
          (fzfa-highlight t)
          (fzf-native-highlight-fn
@@ -1784,12 +1784,12 @@ that render from the snapshot callback into producer-failure reporting."
                        (hook fzf-native-highlight-fn))
                    (funcall hook candidate '(0))
                    (fzfa-test--publication-snapshot 7 (list candidate))))))
-      ;; Start with a nonempty cache.  Its text and counts match the nested
-      ;; output, but the hook gives each publication different properties.
+      ;; Start with a nonempty cache.  The distinct inner hook forces a fresh
+      ;; snapshot even though it produces the same text and properties.
       (setq initial (fzfa--source-async-out src "a" 10)
             inner-hook
             (lambda (candidate _positions)
-              (put-text-property 0 1 'fzfa-test-policy 'inner candidate)))
+              (add-text-properties 0 1 '(fzfa-test-policy initial) candidate)))
       (should (eq (get-text-property 0 'fzfa-test-policy (car (nth 1 initial)))
                   'initial))
       (setq fzf-native-highlight-fn
@@ -1798,12 +1798,12 @@ that render from the snapshot callback into producer-failure reporting."
               (setq fzf-native-highlight-fn inner-hook
                     inner (fzfa--source-async-out src "a" 10))))
       (setq outer (fzfa--source-async-out src "a" 10))
-      (should (equal initial inner))
+      (should (equal-including-properties initial inner))
       (should-not (eq initial inner))
       (should (eq outer t))
       (should (eq (fzfa-source-request-output src) inner))
       (should (eq (get-text-property 0 'fzfa-test-policy (car (nth 1 inner)))
-                  'inner))
+                  'initial))
       (dotimes (_ 20)
         (should (eq (fzfa--source-async-out src "a" 10) inner)))
       (should (= snapshots 3))
