@@ -65,12 +65,14 @@ category, and reuse the same passthrough completion style.
       clear old local ownership
       request-id = fzf-native-async-submit(handle, query, limit)
     status = fzf-native-async-status(handle, request-id)
-    if status is running or stale:
-      keep the prior displayed result
-    else if status failed:
+    if status failed:
       retain and report one terminal error for this key
-    else if snapshot-generation changed:
-      request-output = fzf-native-async-snapshot(handle, request-id)
+    else if no usable result belongs to this request:
+      keep the prior displayed result
+    else if snapshot-generation or presentation changed:
+      snapshot = fzf-native-async-snapshot(handle, request-id)
+      recheck snapshot identity and local request ownership
+      request-output = (final/partial candidates filtered total)
     return request-output
 
   regular timer (50 ms)
@@ -87,9 +89,19 @@ producer can fail after emitting a useful partial candidate set.
 The child producer, native reader, scoring coordinator, and process-wide
 workers run outside Elisp.  Elisp runs on its main thread and never waits for
 scoring.  =fzf-native-async-status= copies only metadata.  Candidate strings
-cross the module boundary once, through =fzf-native-async-snapshot=, when a new
-authoritative generation is ready.  The completion table retains that
-materialized output for stable redraws.
+cross the module boundary through =fzf-native-async-snapshot=.  Each usable
+generation requires one copy per presentation policy.  The completion table
+retains that output for stable redraws.
+
+The native =:stale= flag covers both an older query and a growing candidate
+pool.  When a nonempty partial result belongs to the current request, fzfa
+accepts it.  Thus, candidates can appear before the producer finishes.
+The candidate list and counts come from the same snapshot.  An empty partial
+result remains pending.  Only a complete, non-stale result can clear the display
+with zero matches.
+
+Snapshot construction can call Lisp hooks, so the handle and
+request epoch must still belong to the source before publication.
 
 Fzfa requires fzf-native 2.7.  Shell-command sources use the POSIX session API
 supplied by that release.  The Windows module provides batch scoring only, so

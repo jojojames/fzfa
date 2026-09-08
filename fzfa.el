@@ -167,9 +167,9 @@ Vertico / ivy / icomplete / helm sessions are unaffected — they respect
 
 With the session API, this timer reads metadata-only status and schedules a
 display refresh when `:snapshot-generation' changes.  Candidate growth causes
-the native session to retry the owned request; the timer does not copy the
-candidate list while that retry runs.  Lower values feel more responsive but
-use more CPU."
+the native session to retry the owned request.  The display can use a completed
+batch for that request while the next batch runs.  The timer itself copies no
+candidate strings.  Lower values feel more responsive but use more CPU."
   :type 'float
   :group 'fzfa)
 
@@ -2598,8 +2598,8 @@ on it identically regardless of which container holds it."
                                 ; without relying on native submit deduplication
   request-materialization-key   ; snapshot generation + presentation policy
                                 ; represented by request-output
-  request-output                ; cached (final CANDS FILTERED TOTAL), so a
-                                ; stable redraw polls metadata, not CANDS
+  request-output                ; cached (final/partial CANDS FILTERED TOTAL)
+                                ; stable redraws poll metadata, not CANDS
   ;; Producer-fn (used when source was constructed from :candidates;
   ;; mutually exclusive with the async handle above).  `cands-fn' is
   ;; immutable; the rest is runtime state mutated by the producer
@@ -2812,8 +2812,28 @@ t for pending work."
   (pcase (fzfa--source-async-out src filter limit)
     ('t t)
     (`(final ,candidates ,_filtered ,_total) candidates)
+    (`(partial ,candidates ,_filtered ,_total) candidates)
     (`(pending . ,_total) t)
     (`(failed ,error ,total) (list 'failed error total))))
+
+(defun fzfa--session-output-state (snapshot request-id)
+  "Return the display state of SNAPSHOT for REQUEST-ID, or nil.
+
+A complete, non-stale result is final, including zero matches.  A retained
+nonempty result for the current request is partial while the pool grows.
+The native `:stale' flag also covers pool growth, not just query changes.
+Check request identity before accepting such a result.  Empty partial
+results remain pending so they cannot clear the previous display."
+  (cond
+   ((and (eq (plist-get snapshot :state) 'complete)
+         (not (plist-get snapshot :stale)))
+    'final)
+   ((and (memq (plist-get snapshot :state) '(queued running complete))
+         (eql (plist-get snapshot :request-id) request-id)
+         (eql (plist-get snapshot :latest-request-id) request-id)
+         (eql (plist-get snapshot :result-request-id) request-id)
+         (> (or (plist-get snapshot :filtered) 0) 0))
+    'partial)))
 
 (defun fzfa--source-materialize-session-output
     (src handle request-id request-epoch)
@@ -2821,18 +2841,21 @@ t for pending work."
 
 REQUEST-EPOCH prevents a callback reached during snapshot construction from
 publishing after the source has restarted or stopped."
-  (let ((snapshot (while-no-input
-                    (fzfa--bridge-defcustoms
-                     #'fzf-native-async-snapshot handle request-id))))
+  (let* ((snapshot (while-no-input
+                     (fzfa--bridge-defcustoms
+                      #'fzf-native-async-snapshot handle request-id)))
+         (output-state (unless (eq snapshot t)
+                         (fzfa--session-output-state snapshot request-id))))
     (cond
      ((eq snapshot t) t)
-     ((and (eq (plist-get snapshot :state) 'complete)
-           (not (plist-get snapshot :stale)))
+     ((and output-state
+           (or (eq output-state 'final)
+               (plist-get snapshot :candidates)))
       (fzfa--async-note-producer-failure handle snapshot)
       (if (not (fzfa--source-request-owned-p
                 src handle request-id request-epoch))
           t
-        (let ((output (list 'final
+        (let ((output (list output-state
                             (plist-get snapshot :candidates)
                             (plist-get snapshot :filtered)
                             (plist-get snapshot :total))))
@@ -2892,12 +2915,14 @@ Returns one of:
   t                            — pending input interrupted the fetch
   (final CANDS FILTERED TOTAL) — authoritative result for QUERY;
                                  CANDS may be nil (zero matches)
+  (partial CANDS FILTERED TOTAL) — nonempty result for QUERY at an older
+                                   pool boundary while matching continues
   (failed ERROR TOTAL)         — terminal native matcher failure
   (pending . TOTAL)            — QUERY is still in flight
 
 A changed request is submitted once.  Later renders poll metadata through
-`fzf-native-async-status'.  Candidate materialization occurs only when a new
-complete, non-stale snapshot generation appears."
+`fzf-native-async-status'.  Each usable snapshot generation is materialized
+once per presentation policy.  Partial results must belong to this request."
   (unless (fzfa--session-api-p)
     (error "fzfa: fzf-native 2.7 session API is unavailable"))
   (let* ((handle (fzfa-source-handle src))
@@ -2912,7 +2937,8 @@ complete, non-stale snapshot generation appears."
       t)
      (t
       (let ((status (while-no-input
-                      (fzf-native-async-status handle request-id))))
+                      (fzf-native-async-status handle request-id)))
+            output-state)
         ;; Producer and matcher lifecycles are independent.  A source
         ;; can fail after emitting useful candidates while this request
         ;; remains running or stale, so report that failure before
@@ -2944,16 +2970,22 @@ complete, non-stale snapshot generation appears."
               (if (eq (car-safe replacement) 'failed)
                   replacement
                 (cons 'pending total)))))
-         ((or (not (eq (plist-get status :state) 'complete))
-              (plist-get status :stale))
+         ((not (setq output-state
+                     (fzfa--session-output-state status request-id)))
           (cons 'pending (fzfa--async-collected-total status)))
          ((and (equal
                 (fzfa--source-materialization-key
                  (plist-get status :snapshot-generation))
                 (fzfa-source-request-materialization-key src))
-               (eq (car-safe (fzfa-source-request-output src))
-                   'final))
-          (fzfa-source-request-output src))
+               (memq (car-safe (fzfa-source-request-output src))
+                     '(final partial)))
+          ;; Pool growth can change finality without a new result.  Keep
+          ;; the candidate list and its counts from the cached snapshot.
+          (let ((cached (fzfa-source-request-output src)))
+            (if (eq (car cached) output-state)
+                cached
+              (setf (fzfa-source-request-output src)
+                    (cons output-state (cdr cached))))))
          (t
           (fzfa--source-materialize-session-output
            src handle request-id request-epoch))))))))
@@ -4362,7 +4394,7 @@ Per-source plist keys:
                             (when (nth 2 out)
                               (setf (fzfa-source-total src) (nth 2 out))))
                            (t
-                            ;; Async `(final CANDS FILTERED TOTAL)' —
+                            ;; Async `(final/partial CANDS FILTERED TOTAL)' —
                             ;; unpack counts (atomic with CANDS) and
                             ;; re-tag.  Async handles emit fresh elisp
                             ;; strings each call that have never been
@@ -4976,7 +5008,7 @@ Per-source plist keys:
                                         (setf (fzfa-source-total src)
                                               (nth 2 out))))
                                      (t
-                                      ;; Async `(final CANDS FILTERED TOTAL)'
+                                      ;; Async `(final/partial CANDS FILTERED TOTAL)'
                                       ;; — unpack counts (atomic with CANDS)
                                       ;; and re-tag async candidates only.
                                       ;; Producer-path output is already

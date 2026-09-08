@@ -1403,6 +1403,157 @@ even when their extension is excluded from `fzfa-extensions'."
       (should (= statuses 2))
       (should (= snapshots 1)))))
 
+(ert-deftest fzfa-session-streams-current-request-snapshots ()
+  "Pool growth must not hide completed batches for the current request."
+  (let* ((src (fzfa-make-source :command "producer"))
+         (submits 0)
+         (snapshots 0)
+         (status (copy-sequence
+                  '(:request-id 77 :latest-request-id 77 :result-request-id 77
+                    :state running :stale t :reader-done nil
+                    :snapshot-generation 7 :pool-generation 125
+                    :result-pool-generation 100 :filtered 1 :total 100)))
+         (candidates '("alpha"))
+         first)
+    (setf (fzfa-source-handle src) 'fake-handle)
+    (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+              ((symbol-function 'fzf-native-async-submit)
+               (lambda (&rest _) (cl-incf submits) 77))
+              ((symbol-function 'fzf-native-async-status)
+               (lambda (&rest _) status))
+              ((symbol-function 'fzf-native-async-snapshot)
+               (lambda (&rest _)
+                 (cl-incf snapshots)
+                 (append status (list :candidates candidates)))))
+      (setq first (fzfa--source-async-out src "a" 10))
+      (should (equal first '(partial ("alpha") 1 100)))
+      (should-not (plist-get status :reader-done))
+      ;; Further producer growth must neither hide nor recopy this batch.
+      (setq status (plist-put status :pool-generation 200))
+      (should (eq (fzfa--source-async-out src "a" 10) first))
+      (should (eq (fzfa--source-async-candidates src "a" 10) candidates))
+      (dolist (state '(queued complete))
+        (setq status (plist-put status :state state))
+        (should (eq (fzfa--source-async-out src "a" 10) first)))
+      (should (= snapshots 1))
+      ;; A later batch updates candidates and counts together.
+      (setq status (plist-put status :snapshot-generation 8)
+            status (plist-put status :state 'complete)
+            status (plist-put status :stale nil)
+            status (plist-put status :result-pool-generation 200)
+            status (plist-put status :total 200)
+            status (plist-put status :filtered 2)
+            candidates '("alpha" "alphabet"))
+      (should (equal (fzfa--source-async-out src "a" 10)
+                     '(final ("alpha" "alphabet") 2 200)))
+      (should (= snapshots 2))
+      ;; New input changes finality without another candidate copy.
+      (setq status (plist-put status :state 'running)
+            status (plist-put status :stale t)
+            status (plist-put status :pool-generation 250))
+      (should (equal (fzfa--source-async-out src "a" 10)
+                     '(partial ("alpha" "alphabet") 2 200)))
+      (should (= snapshots 2))
+      (should (= submits 1)))))
+
+(ert-deftest fzfa-session-partial-rejects-other-request ()
+  "Both status and snapshot must associate partial results with this query."
+  (dolist (observation '(status snapshot))
+    (dolist (identity '(:request-id :latest-request-id :result-request-id))
+      (let* ((src (fzfa-make-source :command "producer"))
+             (snapshots 0)
+             (status '(:request-id 77 :latest-request-id 77 :result-request-id 77
+                       :state running :stale t :snapshot-generation 7
+                       :pool-generation 125 :filtered 1 :total 100))
+             (obsolete (plist-put (copy-sequence status) identity 76)))
+        (setf (fzfa-source-handle src) 'fake-handle)
+        (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+                  ((symbol-function 'fzf-native-async-submit)
+                   (lambda (&rest _) 77))
+                  ((symbol-function 'fzf-native-async-status)
+                   (lambda (&rest _)
+                     (if (eq observation 'status) obsolete status)))
+                  ((symbol-function 'fzf-native-async-snapshot)
+                   (lambda (&rest _)
+                     (cl-incf snapshots)
+                     (append obsolete '(:candidates ("old-query"))))))
+          (should (equal (fzfa--source-async-out src "new" 10)
+                         '(pending . 125)))
+          (should (= snapshots (if (eq observation 'status) 0 1)))
+          (should-not (fzfa-source-request-output src)))))))
+
+(ert-deftest fzfa-session-empty-partial-is-not-authoritative ()
+  "An empty batch stays pending until the native result is final."
+  (let* ((src (fzfa-make-source :command "producer"))
+         (snapshots 0)
+         (status (copy-sequence
+                  '(:request-id 77 :latest-request-id 77 :result-request-id 77
+                    :state complete :stale t :reader-done nil
+                    :snapshot-generation 7 :pool-generation 125
+                    :filtered 0 :total 100))))
+    (setf (fzfa-source-handle src) 'fake-handle)
+    (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+              ((symbol-function 'fzf-native-async-submit)
+               (lambda (&rest _) 77))
+              ((symbol-function 'fzf-native-async-status)
+               (lambda (&rest _) status))
+              ((symbol-function 'fzf-native-async-snapshot)
+               (lambda (&rest _) (cl-incf snapshots) status)))
+      (should (equal (fzfa--source-async-out src "missing" 10)
+                     '(pending . 125)))
+      (should (= snapshots 0))
+      (setq status (plist-put status :stale nil)
+            status (plist-put status :reader-done t)
+            status (plist-put status :snapshot-generation 8)
+            status (plist-put status :total 125))
+      (should (equal (fzfa--source-async-out src "missing" 10)
+                     '(final nil 0 125)))
+      (should (= snapshots 1)))))
+
+(ert-deftest fzfa-session-snapshot-can-become-partial-after-status ()
+  "Growth between status and snapshot must not discard useful candidates."
+  (let* ((src (fzfa-make-source :command "producer"))
+         (status '(:request-id 77 :latest-request-id 77 :result-request-id 77
+                   :state complete :stale nil :snapshot-generation 7
+                   :pool-generation 100 :filtered 1 :total 100)))
+    (setf (fzfa-source-handle src) 'fake-handle)
+    (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+              ((symbol-function 'fzf-native-async-submit)
+               (lambda (&rest _) 77))
+              ((symbol-function 'fzf-native-async-status)
+               (lambda (&rest _) status))
+              ((symbol-function 'fzf-native-async-snapshot)
+               (lambda (&rest _)
+                 '(:request-id 77 :latest-request-id 77 :result-request-id 77
+                   :state running :stale t :snapshot-generation 7
+                   :pool-generation 125 :filtered 1 :total 100
+                   :candidates ("alpha")))))
+      (should (equal (fzfa--source-async-out src "a" 10)
+                     '(partial ("alpha") 1 100))))))
+
+(ert-deftest fzfa-session-partial-snapshot-revocation-discards-result ()
+  "Partial snapshots must obey the source handle and epoch checks."
+  (dolist (revocation '(handle epoch))
+    (let* ((src (fzfa-make-source :command "producer"))
+           (status '(:request-id 77 :latest-request-id 77 :result-request-id 77
+                     :state running :stale t :snapshot-generation 7
+                     :pool-generation 125 :filtered 1 :total 100)))
+      (setf (fzfa-source-handle src) 'fake-handle)
+      (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+                ((symbol-function 'fzf-native-async-submit)
+                 (lambda (&rest _) 77))
+                ((symbol-function 'fzf-native-async-status)
+                 (lambda (&rest _) status))
+                ((symbol-function 'fzf-native-async-snapshot)
+                 (lambda (&rest _)
+                   (if (eq revocation 'handle)
+                       (setf (fzfa-source-handle src) 'replacement-handle)
+                     (fzfa--source-clear-request src)
+                     (fzfa--source-submit src "a" 10))
+                   (append status '(:candidates ("obsolete"))))))
+        (should (eq (fzfa--source-async-out src "a" 10) t))
+        (should-not (fzfa-source-request-output src))))))
+
 (ert-deftest fzfa-session-presentation-change-rematerializes-without-rescore ()
   "Highlight policy and hook changes rebuild Lisp output, not native work."
   (let* ((default-directory "/tmp/")
