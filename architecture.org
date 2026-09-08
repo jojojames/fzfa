@@ -101,7 +101,13 @@ result remains pending.  Only a complete, non-stale result can clear the display
 with zero matches.
 
 Snapshot construction can call Lisp hooks, so the handle and
-request epoch must still belong to the source before publication.
+request epoch must still belong to the source before publication.  A hook can
+also yield to a nested render of the same request.  If that render changes the
+cached output, the outer render returns interrupted and preserves the nested
+publication.  This covers newer generations, same-generation presentation
+changes, and terminal errors; generation comparison alone does not.  The
+presentation key is captured before snapshot construction so it describes the
+policy that built the strings.
 
 Fzfa requires fzf-native 2.7.  Shell-command sources use the POSIX session API
 supplied by that release.  The Windows module provides batch scoring only, so

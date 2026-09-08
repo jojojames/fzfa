@@ -2840,8 +2840,14 @@ results remain pending so they cannot clear the previous display."
   "Build and cache REQUEST-ID's candidate output for SRC on HANDLE.
 
 REQUEST-EPOCH prevents a callback reached during snapshot construction from
-publishing after the source has restarted or stopped."
-  (let* ((snapshot (while-no-input
+publishing after the source has restarted or stopped.  A callback can also
+publish another output for the same request.  Retain that output and return
+t so the outer frontend render cannot replace it with its older snapshot."
+  (let* ((cached-output (fzfa-source-request-output src))
+         ;; Capture presentation before callbacks can change it.  The native
+         ;; snapshot supplies the generation after constructing the strings.
+         (materialization-key (fzfa--source-materialization-key nil))
+         (snapshot (while-no-input
                      (fzfa--bridge-defcustoms
                       #'fzf-native-async-snapshot handle request-id)))
          (output-state (unless (eq snapshot t)
@@ -2852,19 +2858,22 @@ publishing after the source has restarted or stopped."
            (or (eq output-state 'final)
                (plist-get snapshot :candidates)))
       (fzfa--async-note-producer-failure handle snapshot)
-      (if (not (fzfa--source-request-owned-p
-                src handle request-id request-epoch))
+      (if (or (not (fzfa--source-request-owned-p
+                    src handle request-id request-epoch))
+              (not (eq cached-output (fzfa-source-request-output src))))
           t
         (let ((output (list output-state
                             (plist-get snapshot :candidates)
                             (plist-get snapshot :filtered)
                             (plist-get snapshot :total))))
+          (setcar materialization-key
+                  (plist-get snapshot :snapshot-generation))
           (setf (fzfa-source-request-materialization-key src)
-                (fzfa--source-materialization-key
-                 (plist-get snapshot :snapshot-generation))
+                materialization-key
                 (fzfa-source-request-output src) output)
           output)))
-     ((fzfa--source-request-owned-p src handle request-id request-epoch)
+     ((and (fzfa--source-request-owned-p src handle request-id request-epoch)
+           (eq cached-output (fzfa-source-request-output src)))
       (setf (fzfa-source-request-materialization-key src) nil
             (fzfa-source-request-output src) nil)
       (cons 'pending (fzfa--async-collected-total snapshot)))

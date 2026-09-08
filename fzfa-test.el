@@ -26,6 +26,9 @@
 (defvar helm-map)
 (defvar helm-after-update-hook)
 (defvar helm-move-selection-after-hook)
+(defvar ivy--actions-list)
+(defvar ivy-last)
+(defvar ivy-text)
 
 ;;; fzfa-hungry--deduplicate-dirs
 
@@ -1456,6 +1459,115 @@ even when their extension is excluded from `fzfa-extensions'."
       (should (= snapshots 2))
       (should (= submits 1)))))
 
+(defun fzfa-test--check-frontend-streaming (ivy-p)
+  "Check streaming publication through the core frontend selected by IVY-P.
+
+Run the real setup hook and collection or Ivy push closure in a temporary
+buffer.  Stub the UI and native boundary so neither an interactive Emacs
+nor optional frontend packages or native session support are required."
+  (save-window-excursion
+    (with-temp-buffer
+      (set-window-buffer (selected-window) (current-buffer))
+      (let ((owner-window (selected-window))
+            (completion-category-overrides nil)
+            (post-command-hook nil)
+            (minibuffer-setup-hook nil)
+            (fzfa--sessions nil)
+            (fzfa-prompt-function #'ignore)
+            (ivy--actions-list nil)
+            (ivy-last nil)
+            (ivy-text "a")
+            (query "a")
+            (boundary-calls 0)
+            (push-calls 0)
+            source refresh output pushed)
+        (cl-progv '(ivy-mode helm-mode) (list ivy-p nil)
+          (cl-letf (((symbol-function 'active-minibuffer-window)
+                     (lambda () owner-window))
+                    ((symbol-function 'minibuffer-prompt-end) #'point-min)
+                    ((symbol-function 'fzfa--minibuffer-format-reset) #'ignore)
+                    ((symbol-function 'run-with-timer) #'ignore)
+                    ((symbol-function 'sit-for) #'ignore)
+                    ((symbol-function 'fzfa--spawn)
+                     (lambda (&rest _) 'fake-handle))
+                    ((symbol-function 'fzfa-source--stop) #'ignore)
+                    ((symbol-function 'fzfa--make-poll-fn)
+                     (lambda (sources _owned-p refresh-fn &rest _)
+                       (setq source (aref sources 0)
+                             refresh refresh-fn)
+                       #'ignore))
+                    ((symbol-function 'fzfa--source-async-out)
+                     (lambda (src filter _limit)
+                       (should (eq src source))
+                       (should (equal filter query))
+                       (cl-incf boundary-calls)
+                       output))
+                    ((symbol-function 'fzf-native-score)
+                     (lambda (&rest _) '(10)))
+                    ((symbol-function 'ivy--set-candidates)
+                     (lambda (candidates)
+                       (cl-incf push-calls)
+                       (setq pushed candidates)))
+                    ((symbol-function 'ivy--exhibit) #'ignore)
+                    ((symbol-function 'ivy--insert-prompt) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt table &rest _)
+                       (run-hooks 'minibuffer-setup-hook)
+                       ;; Establish actual ownership before invoking either
+                       ;; production closure; an uncalled Ivy closure must
+                       ;; not masquerade as a successful empty result.
+                       (should (fzfa--minibuffer-owner-p
+                                (current-buffer) owner-window
+                                fzfa--minibuffer-session))
+                       (should (eq source
+                                   (aref (fzfa-session-sources
+                                          fzfa--minibuffer-session) 0)))
+                       (cl-labels
+                           ((render (next &optional new-query)
+                              (setq output next
+                                    query (or new-query query)
+                                    ivy-text query)
+                              (let* ((before boundary-calls)
+                                     (pushes-before push-calls)
+                                     (candidates
+                                      (if ivy-p
+                                          (progn
+                                            (should (funcall refresh))
+                                            (should (= push-calls
+                                                       (1+ pushes-before)))
+                                            pushed)
+                                        (funcall table query nil t))))
+                                (should (= boundary-calls (1+ before)))
+                                (list (mapcar #'substring-no-properties
+                                              candidates)
+                                      (fzfa-source-filtered source)
+                                      (fzfa-source-total source)))))
+                         ;; Each partial carries counts from its own batch.
+                         (should (equal
+                                  (render '(partial ("alpha") 1 100))
+                                  '(("alpha") 1 100)))
+                         (should (equal
+                                  (render '(partial ("alpha" "alphabet") 2 200))
+                                  '(("alpha" "alphabet") 2 200)))
+                         ;; A new query retains the prior display while
+                         ;; pending, then an authoritative zero clears it.
+                         (should (equal (render '(pending . 250) "missing")
+                                        '(("alpha" "alphabet") 2 250)))
+                         (should (equal (render '(final nil 0 300))
+                                        '(nil 0 300))))
+                       nil)))
+            (fzfa--read '((:name "stream" :command "producer")))))
+        (should (= boundary-calls 4))
+        (should (= push-calls (if ivy-p 4 0)))))))
+
+(ert-deftest fzfa-session-completion-table-publishes-partials ()
+  "The real completion table publishes partials and clears final zero."
+  (fzfa-test--check-frontend-streaming nil))
+
+(ert-deftest fzfa-session-ivy-push-publishes-partials ()
+  "The distinct Ivy push closure publishes partials and clears final zero."
+  (fzfa-test--check-frontend-streaming t))
+
 (ert-deftest fzfa-session-partial-rejects-other-request ()
   "Both status and snapshot must associate partial results with this query."
   (dolist (observation '(status snapshot))
@@ -1553,6 +1665,126 @@ even when their extension is excluded from `fzfa-extensions'."
                    (append status '(:candidates ("obsolete"))))))
         (should (eq (fzfa--source-async-out src "a" 10) t))
         (should-not (fzfa-source-request-output src))))))
+
+(defun fzfa-test--reentrant-session-output (outer-snapshot inner-snapshot
+                                                         &optional present notify)
+  "Materialize OUTER-SNAPSHOT while a callback publishes INNER-SNAPSHOT.
+PRESENT changes the highlight policy before the inner render.  NOTIFY moves
+that render from the snapshot callback into producer-failure reporting."
+  (let* ((src (fzfa-make-source :command "unused"))
+         (fzfa-highlight nil)
+         (fzf-native-highlight-fn nil)
+         (status '(:state complete :stale nil :request-id 7 :latest-request-id 7
+                   :result-request-id 7 :snapshot-generation 7 :filtered 1
+                   :total 10))
+         (calls 0) entered inner outer)
+    (setf (fzfa-source-handle src) 'fake)
+    (cl-labels ((reenter ()
+                  (unless entered
+                    (setq entered t)
+                    (when present (setq fzfa-highlight t))
+                    (setq status inner-snapshot
+                          inner (fzfa--source-async-out src "a" 10)))))
+      (cl-letf (((symbol-function 'fzfa--session-api-p) (lambda () t))
+                ((symbol-function 'fzf-native-async-submit) (lambda (&rest _) 7))
+                ((symbol-function 'fzf-native-async-status) (lambda (&rest _) status))
+                ((symbol-function 'fzfa--print) (lambda (&rest _) nil))
+                ((symbol-function 'fzfa--async-note-producer-failure)
+                 (lambda (_handle snapshot)
+                   (when (and notify (plist-get snapshot :candidates))
+                     (reenter))))
+                ((symbol-function 'fzf-native-async-snapshot)
+                 (lambda (&rest _)
+                   (cl-incf calls)
+                   (if (= calls 1)
+                       (progn (unless notify (reenter)) outer-snapshot)
+                     inner-snapshot))))
+        (setq outer (fzfa--source-async-out src "a" 10))
+        (list :outer outer :inner inner
+              :cached (fzfa-source-request-output src)
+              :key (fzfa-source-request-materialization-key src)
+              :redraw (fzfa--source-async-out src "a" 10)
+              :snapshots calls)))))
+
+(defun fzfa-test--publication-snapshot (generation candidates &optional state)
+  "Return current-request metadata at GENERATION for CANDIDATES and STATE."
+  (list :state (or state 'complete) :stale (eq state 'running)
+        :request-id 7 :latest-request-id 7 :result-request-id 7
+        :snapshot-generation generation :filtered (length candidates)
+        :total 10 :candidates candidates))
+
+(ert-deftest fzfa-session-reentrant-newer-output-survives-outer-snapshot ()
+  "A resumed outer snapshot cannot overwrite a later current-request result."
+  (dolist (state '(complete running))
+    (let* ((result (fzfa-test--reentrant-session-output
+                    (fzfa-test--publication-snapshot 7 '("alpha-old"))
+                    (fzfa-test--publication-snapshot 8 '("alpha-new") state)))
+           (inner (plist-get result :inner)))
+      (should (eq (plist-get result :outer) t))
+      (should (equal (nth 1 inner) '("alpha-new")))
+      (should (eq (plist-get result :cached) inner))
+      (should (eq (plist-get result :redraw) inner))
+      (should (= (car (plist-get result :key)) 8))
+      (should (= (plist-get result :snapshots) 2)))))
+
+(ert-deftest fzfa-session-reentrant-empty-final-survives-outer-snapshot ()
+  "An older nonempty snapshot cannot restore candidates after final emptiness."
+  (let* ((result (fzfa-test--reentrant-session-output
+                  (fzfa-test--publication-snapshot 7 '("alpha-old"))
+                  (fzfa-test--publication-snapshot 8 nil)))
+         (inner (plist-get result :inner)))
+    (should (eq (plist-get result :outer) t))
+    (should (equal inner '(final nil 0 10)))
+    (should (eq (plist-get result :cached) inner))
+    (should (eq (plist-get result :redraw) inner))))
+
+(ert-deftest fzfa-session-reentrant-output-survives-outer-pending-snapshot ()
+  "An unusable outer snapshot cannot clear a nested completed cache."
+  (let* ((result (fzfa-test--reentrant-session-output
+                  (fzfa-test--publication-snapshot 7 nil 'running)
+                  (fzfa-test--publication-snapshot 8 '("alpha-new"))))
+         (inner (plist-get result :inner)))
+    (should (eq (plist-get result :outer) t))
+    (should (eq (plist-get result :cached) inner))
+    (should (eq (plist-get result :redraw) inner))
+    (should (= (plist-get result :snapshots) 2))))
+
+(ert-deftest fzfa-session-reentrant-presentation-survives-outer-snapshot ()
+  "The same generation can have a newer presentation that must stay cached."
+  (let* ((result (fzfa-test--reentrant-session-output
+                  (fzfa-test--publication-snapshot 7 '("unhighlighted"))
+                  (fzfa-test--publication-snapshot 7 '("highlighted")) t))
+         (inner (plist-get result :inner)))
+    (should (eq (plist-get result :outer) t))
+    (should (equal inner '(final ("highlighted") 1 10)))
+    (should (eq (plist-get result :cached) inner))
+    (should (eq (plist-get result :redraw) inner))
+    (should (equal (plist-get result :key) '(7 t nil)))
+    (should (= (plist-get result :snapshots) 2))))
+
+(ert-deftest fzfa-session-reentrant-failure-survives-outer-snapshot ()
+  "A nested terminal error cannot be replaced by an older successful snapshot."
+  (let* ((result (fzfa-test--reentrant-session-output
+                  (fzfa-test--publication-snapshot 7 '("alpha-old"))
+                  '(:state failed :error "matcher failed" :total 10)))
+         (inner (plist-get result :inner)))
+    (should (eq (plist-get result :outer) t))
+    (should (equal inner '(failed "matcher failed" 10)))
+    (should (eq (plist-get result :cached) inner))
+    (should (equal (plist-get result :redraw) inner))
+    (should-not (plist-get result :key))
+    (should (= (plist-get result :snapshots) 1))))
+
+(ert-deftest fzfa-session-reentrant-producer-notice-preserves-newer-output ()
+  "A callback during failure reporting runs before the final publication fence."
+  (let* ((result (fzfa-test--reentrant-session-output
+                  (fzfa-test--publication-snapshot 7 '("alpha-old"))
+                  (fzfa-test--publication-snapshot 8 '("alpha-new")) nil t))
+         (inner (plist-get result :inner)))
+    (should (eq (plist-get result :outer) t))
+    (should (eq (plist-get result :cached) inner))
+    (should (eq (plist-get result :redraw) inner))
+    (should (= (plist-get result :snapshots) 2))))
 
 (ert-deftest fzfa-session-presentation-change-rematerializes-without-rescore ()
   "Highlight policy and hook changes rebuild Lisp output, not native work."
