@@ -4723,7 +4723,6 @@ Per-source plist keys:
                   (lambda (transaction)
                     (run-with-idle-timer 0 nil transaction)))))
           (add-hook 'post-command-hook refresh-overlay)
-          (sit-for fzfa-refresh-delay)
           (setq result
                 (minibuffer-with-setup-hook
                     (lambda ()
