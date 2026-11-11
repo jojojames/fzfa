@@ -30,6 +30,15 @@
 (require 'fzfa)
 (require 'cl-lib)
 
+(defun fzfa-hungry--local-dirs ()
+  "Return deduplicated local parent directories of file-visiting buffers.
+Hungry sources run local processes; TRAMP file names are not local paths."
+  (fzfa-hungry--deduplicate-dirs
+   (cl-loop for buf in (buffer-list)
+            for file = (buffer-file-name buf)
+            when (and file (not (file-remote-p file)))
+            collect (file-name-directory (expand-file-name file)))))
+
 (defun fzfa-hungry--deduplicate-dirs (dirs)
   "Remove duplicates and subdirectory entries from DIRS.
 
@@ -51,28 +60,26 @@ than inheriting A's.  Git-specific — rg only honors .gitignore, so .hg
 (defun fzfa-hungry-swiper ()
   "Grep across the parent directories of all file-visiting buffers.
 
-Collects unique parent directories, drops any that are subdirectories of
+Collects unique local parent directories, drops any that are subdirectories of
 another in the set, then streams rg (or grep) output through fzf.
 Selecting a match opens the file and jumps to the line."
   (interactive)
-  (let* ((raw-dirs (cl-loop for buf in (buffer-list)
-                            for file = (buffer-file-name buf)
-                            when file
-                            collect (file-name-directory
-                                     (expand-file-name file))))
-         (dirs (fzfa-hungry--deduplicate-dirs raw-dirs)))
+  (let ((dirs (fzfa-hungry--local-dirs)))
     (unless dirs
-      (user-error "No file-visiting buffers found"))
+      (user-error "No local file-visiting buffers found"))
     (let* ((rg   (executable-find "rg"))
            (grep (executable-find "grep"))
            (dir-args (mapconcat #'shell-quote-argument dirs " "))
            (command
             (cond
              (rg   (concat (shell-quote-argument rg)
-                           " --line-number --no-heading --with-filename '' "
+                           ;; Binary detection can occur after output has
+                           ;; started.  Exclude NUL-bearing lines explicitly
+                           ;; so they cannot poison the native candidate pool.
+                           " --line-number --no-heading --with-filename '^[^\\x00]*$' -- "
                            dir-args))
              (grep (concat (shell-quote-argument grep)
-                           " -Rn '' "
+                           " -RIn '' -- "
                            dir-args))
              (t (user-error "Neither rg nor grep found in exec-path")))))
       (when-let* ((r (fzfa-completing-read
@@ -87,17 +94,12 @@ Selecting a match opens the file and jumps to the line."
 (defun fzfa-hungry-find ()
   "Find files across the parent directories of all file-visiting buffers.
 
-Collects unique parent directories, drops subdirectories already covered
+Collects unique local parent directories, drops subdirectories already covered
 by a shallower parent, then streams fd (or find) output through fzf."
   (interactive)
-  (let* ((raw-dirs (cl-loop for buf in (buffer-list)
-                            for file = (buffer-file-name buf)
-                            when file
-                            collect (file-name-directory
-                                     (expand-file-name file))))
-         (dirs (fzfa-hungry--deduplicate-dirs raw-dirs)))
+  (let ((dirs (fzfa-hungry--local-dirs)))
     (unless dirs
-      (user-error "No file-visiting buffers found"))
+      (user-error "No local file-visiting buffers found"))
     (let* ((fd   (executable-find "fd"))
            (find (executable-find "find"))
            (dir-args (mapconcat #'shell-quote-argument dirs " "))

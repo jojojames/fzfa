@@ -68,6 +68,54 @@
   "Empty input returns nil."
   (should (null (fzfa-hungry--deduplicate-dirs '()))))
 
+(ert-deftest fzfa-hungry-local-dirs-excludes-tramp ()
+  "Local hungry processes never receive TRAMP file names."
+  (let ((local (generate-new-buffer " *fzfa-local*"))
+        (remote (generate-new-buffer " *fzfa-remote*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer local
+            (setq buffer-file-name "/tmp/local/file.el"))
+          (with-current-buffer remote
+            (setq buffer-file-name "/ssh:host:/remote/file.el"))
+          (cl-letf (((symbol-function 'buffer-list)
+                     (lambda () (list local remote)))
+                    ;; Keep TRAMP's global initialization out of this unit
+                    ;; test; only directory selection is under test here.
+                    ((symbol-function 'file-remote-p)
+                     (lambda (file &rest _) (string-prefix-p "/ssh:" file))))
+            (should (equal (fzfa-hungry--local-dirs) '("/tmp/local/")))))
+      (dolist (buf (list local remote))
+        (with-current-buffer buf (setq buffer-file-name nil))
+        (kill-buffer buf)))))
+
+(ert-deftest fzfa-hungry-swiper-excludes-nul-lines ()
+  "Late NUL bytes never reach the native producer's output."
+  (skip-unless (executable-find "rg"))
+  (let ((dir (make-temp-file "fzfa-hungry-" t))
+        command)
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "mixed.txt" dir)
+            (insert (make-string 100000 ?a) "\nunsafe\0line\nsafe\n"))
+          (cl-letf (((symbol-function 'fzfa-hungry--local-dirs)
+                     (lambda () (list dir)))
+                    ((symbol-function 'fzfa-completing-read)
+                     (lambda (&rest args)
+                       (setq command (plist-get args :command)) nil)))
+            (fzfa-hungry-swiper))
+          (with-temp-buffer
+            ;; Force text mode to exercise the line filter independently
+            ;; of rg's binary sniffer and user configuration.
+            (setq command (replace-regexp-in-string
+                           " --line-number" " --text --line-number" command t t))
+            (should (zerop (call-process shell-file-name nil t nil
+                                         shell-command-switch command)))
+            (should-not (string-match-p "\0" (buffer-string)))
+            (should (string-match-p ":1:aaa" (buffer-string)))
+            (should (string-match-p ":3:safe" (buffer-string)))))
+      (delete-directory dir t))))
+
 ;;; fzfa-candidate-directory / fzfa-resolve-candidate
 
 (defun fzfa-test--make-session (specs candidates)
