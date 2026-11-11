@@ -5455,7 +5455,7 @@ inner sources receive auto-derived keys from their own :name."
     (fzfa-hungry-find :narrow f)
     (fzfa-imenu-all-but-current :narrow I)
     (fzfa-M-x :narrow x)
-    (fzfa-swiper-all :narrow s)
+    (fzfa-swiper :narrow s)
     (fzfa-hungry-swiper :narrow S)
     fzfa-locate)
   "Commands shown by `fzfa-find-any'.
@@ -5475,7 +5475,7 @@ Each entry is either a bare command symbol or a list
     fzfa-buffer
     fzfa-recent-file
     (fzfa-smart-find :narrow f)
-    (fzfa-M-x-for-buffer :narrow x)
+    (fzfa-M-x :narrow x)
     (fzfa-swiper :narrow s)
     (fzfa-smart-grep :narrow g))
   "Commands shown by `fzfa-find-some'.
