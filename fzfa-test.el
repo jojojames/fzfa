@@ -71,11 +71,13 @@
 (ert-deftest fzfa-hungry-local-dirs-excludes-tramp ()
   "Local hungry processes never receive TRAMP file names."
   (let ((local (generate-new-buffer " *fzfa-local*"))
-        (remote (generate-new-buffer " *fzfa-remote*")))
+        (remote (generate-new-buffer " *fzfa-remote*"))
+        (local-file (expand-file-name "fzfa-local/file.el"
+                                      temporary-file-directory)))
     (unwind-protect
         (progn
           (with-current-buffer local
-            (setq buffer-file-name "/tmp/local/file.el"))
+            (setq buffer-file-name local-file))
           (with-current-buffer remote
             (setq buffer-file-name "/ssh:host:/remote/file.el"))
           (cl-letf (((symbol-function 'buffer-list)
@@ -84,7 +86,8 @@
                     ;; test; only directory selection is under test here.
                     ((symbol-function 'file-remote-p)
                      (lambda (file &rest _) (string-prefix-p "/ssh:" file))))
-            (should (equal (fzfa-hungry--local-dirs) '("/tmp/local/")))))
+            (should (equal (fzfa-hungry--local-dirs)
+                           (list (file-name-directory local-file))))))
       (dolist (buf (list local remote))
         (with-current-buffer buf (setq buffer-file-name nil))
         (kill-buffer buf)))))
