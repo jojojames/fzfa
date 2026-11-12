@@ -426,6 +426,32 @@ surfaced via `fzfa--location-group' as the section header."
                              '("fzfa-test-buf" . 1))))))
       (kill-buffer buf))))
 
+(ert-deftest fzfa-swiper-all-exclusion-happens-before-line-collection ()
+  "Excluded buffers are never read; nil retains all eligible buffers."
+  (let ((keep (generate-new-buffer "fzfa-keep"))
+        (omit (generate-new-buffer "fzfa-omit")))
+    (unwind-protect
+        (progn
+          (with-current-buffer keep (insert "keep\n"))
+          (with-current-buffer omit (insert "omit\n"))
+          (dolist (regexp '(nil "\\`fzfa-omit"))
+            (let ((fzfa-swiper-all-buffer-exclude-regexp regexp)
+                  (original (symbol-function 'buffer-substring-no-properties))
+                  read-buffers)
+              (cl-letf (((symbol-function 'buffer-list)
+                         (lambda (&rest _) (list keep omit)))
+                        ((symbol-function 'buffer-substring-no-properties)
+                         (lambda (&rest args)
+                           (push (current-buffer) read-buffers)
+                           (apply original args))))
+                (let ((cands (plist-get (fzfa--extract-args #'fzfa-swiper-all)
+                                        :candidates)))
+                  (should (equal cands (if regexp '("1:keep") '("1:keep" "1:omit"))))
+                  (should (memq keep read-buffers))
+                  (should (eq (not (null (memq omit read-buffers))) (null regexp))))))))
+      (kill-buffer keep)
+      (kill-buffer omit))))
+
 ;;; fzfa--format-stats
 
 (ert-deftest fzfa-format-stats-with-idx ()

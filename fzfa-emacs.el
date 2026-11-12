@@ -336,6 +336,14 @@ funcalls `man'."
                                 :prompt "swiper: "
                                 :category 'fzfa-location))))
 
+(defcustom fzfa-swiper-all-buffer-exclude-regexp nil
+  "Regexp matching buffer names to omit from `fzfa-swiper-all'.
+Nil excludes no additional buffers.  Matching buffers are skipped before
+their lines are collected.  Minibuffers and buffers whose names begin
+with a space are always excluded."
+  :type '(choice (const :tag "No additional exclusions" nil) regexp)
+  :group 'fzfa)
+
 ;;;###autoload
 (defun fzfa-swiper-all ()
   "Search lines across all open buffers using fzf.
@@ -343,12 +351,17 @@ funcalls `man'."
 Candidates display LINE:CONTENT; the originating buffer (file path or
 buffer name) is carried on each candidate as an `fzfa-location' text
 property and shown as the group header.  fzf scores only against
-LINE:CONTENT — buffer names never enter the search input."
+LINE:CONTENT — buffer names never enter the search input.
+See `fzfa-swiper-all-buffer-exclude-regexp' to skip buffers by name."
   (interactive)
   (let* ((buffers (cl-remove-if
                    (lambda (b)
                      (or (minibufferp b)
-                         (string-prefix-p " " (buffer-name b))))
+                         (string-prefix-p " " (buffer-name b))
+                         (and fzfa-swiper-all-buffer-exclude-regexp
+                              (string-match-p
+                               fzfa-swiper-all-buffer-exclude-regexp
+                               (buffer-name b)))))
                    (buffer-list)))
          (used (make-hash-table :test 'equal))
          (candidates
