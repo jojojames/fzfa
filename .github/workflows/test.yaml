@@ -24,11 +24,13 @@ jobs:
         with:
           path: fzf-async
 
-      # Test the declared fzf-native 2.7 dependency and its tracked artifacts.
+      # Test the declared fzf-native 3.4 minimum and its tracked artifacts.
+      # No 3.4 release tag is published; pin its version-bump commit so this
+      # baseline stays reproducible instead of following newer main revisions.
       - uses: actions/checkout@v4
         with:
           repository: dangduc/fzf-native
-          ref: "2.7"
+          ref: eddad0711c385ec557232059d7479a81f669b9d3 # fzf-native 3.4
           path: fzf-native
 
       # Build the same reviewed source in a separate checkout.  Keep the first
@@ -37,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: dangduc/fzf-native
-          ref: "2.7"
+          ref: eddad0711c385ec557232059d7479a81f669b9d3 # fzf-native 3.4
           path: fzf-native-source
 
       # Optional Elisp deps that fzfa forward-declares from.  Checked
