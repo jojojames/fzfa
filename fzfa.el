@@ -3400,7 +3400,8 @@ The prompt overlay shows: DIR IDX/[FILTERED](TOTAL)
       (when d (setq directory d))))
   (unless (or skip-executable-check candidates)
     (when-let* ((prog (and command (car (split-string command nil t)))))
-      (let ((remote (file-remote-p default-directory)))
+      (let* ((default-directory (or directory default-directory))
+             (remote (file-remote-p default-directory)))
         ;; For remote paths, `executable-find' with a non-nil REMOTE
         ;; arg is TRAMP-aware but costs a round-trip; skip unless
         ;; `fzfa-validate-remote-executables' opts in.
