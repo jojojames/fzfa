@@ -4619,5 +4619,25 @@ locked even if the wrapper changes."
           (fzfa-completing-read :command "tool ." :directory temporary-file-directory))
         (should (eq dispatched (if frontend 'helm 'default)))))))
 
+(ert-deftest fzfa-hungry-working-directory-falls-back-only-for-tramp ()
+  "Hungry keeps local cwd and uses a local search root for remote callers."
+  (let* ((root (expand-file-name "fzfa-hungry-root/" temporary-file-directory))
+         (fzfa-project-backend nil)
+         (fzfa--setup-done t))
+    (cl-letf (((symbol-function 'fzfa-hungry--local-dirs) (lambda () (list root)))
+              ((symbol-function 'file-remote-p)
+               (lambda (path &rest _) (string-prefix-p "/ssh:" path)))
+              ((symbol-function 'executable-find)
+               (lambda (name &rest _) (concat "/usr/bin/" name))))
+      (dolist (command '(fzfa-hungry-find fzfa-hungry-swiper))
+        (dolist (default-directory (list temporary-file-directory "/ssh:fake:/work/"))
+          (let ((source (fzfa--extract-args command)))
+            (should (equal (plist-get source :directory)
+                           (if (string-prefix-p "/ssh:" default-directory)
+                               root
+                             default-directory)))
+            (should (string-match-p (regexp-quote (shell-quote-argument root))
+                                    (plist-get source :command)))))))))
+
 (provide 'fzfa-test)
 ;;; fzfa-test.el ends here

@@ -86,7 +86,9 @@ Selecting a match opens the file and jumps to the line."
       (when-let* ((r (fzfa-completing-read
                       :prompt "hungry swiper: "
                       :command command
-                      :directory default-directory
+                      :directory (if (file-remote-p default-directory)
+                                     (car dirs)
+                                   default-directory)
                       :category 'fzfa-grep
                       :group #'fzfa--grep-group)))
         (fzfa-visit-grep r)))))
@@ -117,7 +119,9 @@ by a shallower parent, then streams fd (or find) output through fzf."
       (when-let* ((result (fzfa-completing-read
                            :prompt "hungry find: "
                            :command command
-                           :directory default-directory)))
+                           :directory (if (file-remote-p default-directory)
+                                          (car dirs)
+                                        default-directory))))
         (fzfa-visit-file result)))))
 
 (provide 'fzfa-hungry)
