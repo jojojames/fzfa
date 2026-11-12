@@ -32,11 +32,12 @@
 
 (defun fzfa-hungry--local-dirs ()
   "Return deduplicated local parent directories of file-visiting buffers.
-Hungry sources run local processes; TRAMP file names are not local paths."
+Hungry sources run local processes; remote/slow files classified by
+`fzfa-file-remote-p' are excluded before repository marker checks."
   (fzfa-hungry--deduplicate-dirs
    (cl-loop for buf in (buffer-list)
             for file = (buffer-file-name buf)
-            when (and file (not (file-remote-p file)))
+            when (and file (not (fzfa-file-remote-p file)))
             collect (file-name-directory (expand-file-name file)))))
 
 (defun fzfa-hungry--deduplicate-dirs (dirs)
