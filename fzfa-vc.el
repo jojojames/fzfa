@@ -14,7 +14,8 @@
 ;; Multi-source modified-files picker that dispatches to backend-
 ;; specific commands from vc extensions `fzfa-git' and `fzfa-hg'
 ;; `vc-responsible-backend' is used for detection
-;; only — it is cheap (walks parents looking for `.git' / `.hg' / etc.).
+;; only.  Remote/slow directories are rejected before detection walks
+;; parents looking for `.git' / `.hg' / etc.
 ;;
 ;; Loaded automatically when `vc' is in `fzfa-extensions' and
 ;; `fzfa-setup' has been called.  No setup function is registered —
@@ -83,7 +84,10 @@ if a directory's backend changes (`git init', repo move).")
   "Return the VC backend symbol for `default-directory'.
 
 Memoised via `fzfa-vc--backend-cache'.  Signals a `user-error'
-when no backend is responsible."
+for remote/slow directories or when no backend is responsible."
+  (when (fzfa-file-remote-p default-directory)
+    (user-error "VC discovery skipped for remote or slow directory: %s"
+                default-directory))
   (let* ((dir (file-name-as-directory (expand-file-name default-directory)))
          (cached (gethash dir fzfa-vc--backend-cache))
          (backend (or cached

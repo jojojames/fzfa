@@ -376,6 +376,16 @@ function   Call the function with no arguments; Returns a directory string."
                  (function :tag "Custom function"))
   :group 'fzfa)
 
+(defcustom fzfa-project-skip-remote t
+  "Whether to skip implicit project discovery on remote or slow paths.
+When non-nil and `fzfa-file-remote-p' matches `default-directory',
+the `project' and `projectile' values of `fzfa-project-backend' use
+`default-directory' without discovering a project root.  Set nil to
+restore project discovery on those paths.
+Explicit `fzfa-directory' overrides and custom backends are unaffected."
+  :type 'boolean
+  :group 'fzfa)
+
 ;;; Variables
 
 (defvar fzfa--setup-done nil
@@ -2318,10 +2328,14 @@ Priority: `fzfa-directory' >
         ((pred functionp)
          (funcall fzfa-project-backend))
         ('project
-         (when-let* ((pr (project-current)))
-           (project-root pr)))
+         (unless (and fzfa-project-skip-remote
+                      (fzfa-file-remote-p default-directory))
+           (when-let* ((pr (project-current)))
+             (project-root pr))))
         ('projectile
-         (when (bound-and-true-p projectile-mode)
+         (when (and (bound-and-true-p projectile-mode)
+                    (not (and fzfa-project-skip-remote
+                              (fzfa-file-remote-p default-directory))))
            (projectile-project-root))))
       default-directory))
 
